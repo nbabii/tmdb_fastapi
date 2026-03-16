@@ -24,7 +24,29 @@ API docs available at: http://localhost:8000/api/v1/openapi.json
 Interactive docs (Swagger): http://localhost:8000/docs  
 ReDoc: http://localhost:8000/redoc
 
-## Project Structure
+## Testing
+
+Run all tests:
+
+```bash
+pytest tests/ -v
+```
+
+Run a specific test file:
+
+```bash
+pytest tests/test_titles.py -v
+```
+
+Run a specific test:
+
+```bash
+pytest tests/test_titles.py::TestSearchTitlesEndpoint::test_search_movie_returns_200 -v
+```
+
+> No API key needed — TMDB client is mocked in all tests.
+
+
 
 ```
 tmdb/

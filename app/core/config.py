@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     TMDB_BASE_URL: str = "https://api.themoviedb.org/3"
     TMDB_IMAGE_BASE_URL: str = "https://image.tmdb.org/t/p"
 
+    DATABASE_URL: str = ""
+
     model_config = {"env_file": ".env", "case_sensitive": True}
 
 

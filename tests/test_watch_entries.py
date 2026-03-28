@@ -14,7 +14,6 @@ VALID_PAYLOAD = {
     "tmdb_id": 550,
     "title": "Fight Club",
     "release_date": "1999-10-15",
-    "runtime": 139,
     "my_rating": 9,
     "my_overview": "Great movie",
     "my_date_watched": "2026-03-28",

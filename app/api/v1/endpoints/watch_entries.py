@@ -24,7 +24,7 @@ async def create_watch_entry(
         logger.warning("Duplicate tmdb_id=%d rejected", body.tmdb_id)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Movie with tmdb_id {body.tmdb_id} is already in the database.",
+            detail=f"Movie with tmdb_id {body.tmdb_id} and name '{body.title}' is already in the database.",
         )
     entry = WatchedMovie(**body.model_dump())
     db.add(entry)

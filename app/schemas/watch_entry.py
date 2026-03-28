@@ -8,7 +8,6 @@ class WatchEntryCreate(BaseModel):
     tmdb_id: int
     title: str
     release_date: date | None = None
-    runtime: int | None = None
     my_rating: int | None = Field(default=None, ge=1, le=10)
     my_overview: str | None = None
     my_date_watched: date | None = None

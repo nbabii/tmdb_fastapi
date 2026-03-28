@@ -18,7 +18,6 @@ class WatchedMovie(Base):
     tmdb_id: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(String, nullable=False)
     release_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    runtime: Mapped[int | None] = mapped_column(Integer, nullable=True)
     my_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
     my_overview: Mapped[str | None] = mapped_column(Text, nullable=True)
     my_date_watched: Mapped[date | None] = mapped_column(Date, nullable=True)

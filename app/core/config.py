@@ -14,6 +14,8 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = ""
 
+    LOG_LEVEL: str = "INFO"
+
     model_config = {"env_file": ".env", "case_sensitive": True}
 
 

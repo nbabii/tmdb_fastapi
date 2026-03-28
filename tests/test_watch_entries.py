@@ -1,7 +1,8 @@
 import uuid
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from datetime import date, datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 from app.core.db import get_db
@@ -148,6 +149,140 @@ class TestCreateWatchEntry:
         no_raise_client = TestClient(app, raise_server_exceptions=False)
         try:
             response = no_raise_client.post("/api/v1/watch-entries", json=VALID_PAYLOAD)
+        finally:
+            clear_db_override()
+
+        assert response.status_code == 500
+
+
+MOCK_TMDB_DETAILS = {
+    "id": 550,
+    "title": "Fight Club",
+    "overview": "An insomniac office worker forms an underground fight club.",
+    "runtime": 139,
+    "poster_path": "/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg",
+    "vote_average": 8.4,
+}
+
+
+def make_mock_entry(**overrides) -> MagicMock:
+    attrs = {
+        "id": FIXED_UUID,
+        "tmdb_id": 550,
+        "title": "Fight Club",
+        "release_date": date(1999, 10, 15),
+        "my_rating": 9,
+        "my_overview": "Great movie",
+        "my_date_watched": date(2026, 3, 28),
+        "created_at": FIXED_DATETIME,
+        **overrides,
+    }
+    entry = MagicMock()
+    for key, value in attrs.items():
+        setattr(entry, key, value)
+    col_mocks = []
+    for key in attrs:
+        col = MagicMock()
+        col.key = key
+        col_mocks.append(col)
+    entry.__table__ = MagicMock()
+    entry.__table__.columns = col_mocks
+    return entry
+
+
+class TestGetWatchEntry:
+    def test_get_by_id_returns_200(self, client: TestClient) -> None:
+        entry = make_mock_entry()
+        override_db(make_mock_db(existing=entry))
+        try:
+            with patch(
+                "app.services.tmdb_client.tmdb_client.get_movie_details",
+                new=AsyncMock(return_value=MOCK_TMDB_DETAILS),
+            ):
+                response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
+        finally:
+            clear_db_override()
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == str(FIXED_UUID)
+        assert data["tmdb_id"] == 550
+        assert data["title"] == "Fight Club"
+        assert data["overview"] == MOCK_TMDB_DETAILS["overview"]
+        assert data["runtime"] == MOCK_TMDB_DETAILS["runtime"]
+        assert data["poster_path"] == MOCK_TMDB_DETAILS["poster_path"]
+        assert data["vote_average"] == MOCK_TMDB_DETAILS["vote_average"]
+        assert data["my_rating"] == 9
+        assert data["release_date"] == "1999-10-15"
+
+    def test_get_by_tmdb_id_returns_200(self, client: TestClient) -> None:
+        entry = make_mock_entry()
+        override_db(make_mock_db(existing=entry))
+        try:
+            with patch(
+                "app.services.tmdb_client.tmdb_client.get_movie_details",
+                new=AsyncMock(return_value=MOCK_TMDB_DETAILS),
+            ):
+                response = client.get("/api/v1/watch-entries?tmdb_id=550")
+        finally:
+            clear_db_override()
+
+        assert response.status_code == 200
+        assert response.json()["tmdb_id"] == 550
+
+    def test_id_takes_precedence_over_tmdb_id(self, client: TestClient) -> None:
+        entry = make_mock_entry()
+        mock_db = make_mock_db(existing=entry)
+        override_db(mock_db)
+        try:
+            with patch(
+                "app.services.tmdb_client.tmdb_client.get_movie_details",
+                new=AsyncMock(return_value=MOCK_TMDB_DETAILS),
+            ):
+                response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}&tmdb_id=550")
+        finally:
+            clear_db_override()
+
+        assert response.status_code == 200
+        # scalar should have been called with the id-based query (called once)
+        mock_db.scalar.assert_called_once()
+
+    def test_no_params_returns_400(self, client: TestClient) -> None:
+        response = client.get("/api/v1/watch-entries")
+
+        assert response.status_code == 400
+        assert "id" in response.json()["detail"] or "tmdb_id" in response.json()["detail"]
+
+    def test_entry_not_found_returns_404(self, client: TestClient) -> None:
+        override_db(make_mock_db(existing=None))
+        try:
+            response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
+        finally:
+            clear_db_override()
+
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"].lower()
+
+    def test_tmdb_api_error_returns_502(self, client: TestClient) -> None:
+        entry = make_mock_entry()
+        override_db(make_mock_db(existing=entry))
+        try:
+            with patch(
+                "app.services.tmdb_client.tmdb_client.get_movie_details",
+                new=AsyncMock(side_effect=httpx.HTTPError("TMDB is down")),
+            ):
+                response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
+        finally:
+            clear_db_override()
+
+        assert response.status_code == 502
+        assert "TMDB API error" in response.json()["detail"]
+
+    def test_db_error_returns_500(self, client: TestClient) -> None:
+        override_db(make_mock_db(scalar_error=Exception("DB connection lost")))
+        no_raise_client = TestClient(app, raise_server_exceptions=False)
+        try:
+            response = no_raise_client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
         finally:
             clear_db_override()
 

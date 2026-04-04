@@ -4,11 +4,10 @@ import uuid
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import get_db
+from app.api.deps import get_watch_entry_repo
 from app.models.watched_movie import WatchedMovie
+from app.repositories.watch_entry_repository import WatchEntryRepository
 from app.schemas.watch_entry import (
     WatchEntryBulkResult,
     WatchEntryCreate,
@@ -22,22 +21,15 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def _find_existing_tmdb_ids(db: AsyncSession, tmdb_ids: list[int]) -> set[int]:
-    rows = await db.scalars(
-        select(WatchedMovie.tmdb_id).where(WatchedMovie.tmdb_id.in_(tmdb_ids))
-    )
-    return set(rows.all())
-
-
 @router.post("", response_model=WatchEntryBulkResult)
 async def create_watch_entries(
     body: list[WatchEntryCreate],
-    db: AsyncSession = Depends(get_db),
+    repo: WatchEntryRepository = Depends(get_watch_entry_repo),
 ) -> JSONResponse:
     if not body:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Request body must not be empty.")
 
-    existing_ids = await _find_existing_tmdb_ids(db, [item.tmdb_id for item in body])
+    existing_ids = await repo.find_existing_tmdb_ids([item.tmdb_id for item in body])
 
     to_create: list[WatchedMovie] = []
     skipped: list[WatchEntrySkipped] = []
@@ -61,14 +53,12 @@ async def create_watch_entries(
             detail=[s.model_dump() for s in skipped],
         )
 
-    db.add_all(to_create)
-    await db.commit()
-    for entry in to_create:
-        await db.refresh(entry)
+    created = await repo.bulk_create(to_create)
+    for entry in created:
         logger.info("Watch entry created: tmdb_id=%d id=%s", entry.tmdb_id, entry.id)
 
     result = WatchEntryBulkResult(
-        created=[WatchEntryResponse.model_validate(e) for e in to_create],
+        created=[WatchEntryResponse.model_validate(e) for e in created],
         skipped=skipped,
     )
 
@@ -80,15 +70,15 @@ async def create_watch_entries(
 async def get_watch_entry(
     id: uuid.UUID | None = None,
     tmdb_id: int | None = None,
-    db: AsyncSession = Depends(get_db),
+    repo: WatchEntryRepository = Depends(get_watch_entry_repo),
 ) -> WatchEntryDetailResponse:
     if id is None and tmdb_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provide 'id' or 'tmdb_id'.")
 
     if id is not None:
-        entry = await db.scalar(select(WatchedMovie).where(WatchedMovie.id == id))
+        entry = await repo.find_by_id(id)
     else:
-        entry = await db.scalar(select(WatchedMovie).where(WatchedMovie.tmdb_id == tmdb_id))
+        entry = await repo.find_by_tmdb_id(tmdb_id)
 
     if not entry:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Watch entry not found.")

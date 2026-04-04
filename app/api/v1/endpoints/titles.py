@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.api.deps import get_tmdb_service
 from app.schemas.title import TitleSearchResponse, TitleType
-from app.services.tmdb_client import tmdb_client
+from app.services.tmdb_service import TmdbService
 
 router = APIRouter()
 
@@ -12,9 +13,10 @@ async def search_titles(
     type: TitleType = Query(..., description="Type of title to search for"),
     page: int = Query(default=1, ge=1, le=500),
     year: int | None = Query(default=None, description="Filter by release year"),
+    tmdb: TmdbService = Depends(get_tmdb_service),
 ) -> TitleSearchResponse:
     try:
-        data = await tmdb_client.search_titles(query=query, type=type, page=page, year=year)
+        data = await tmdb.search_titles(query=query, type=type, page=page, year=year)
         return TitleSearchResponse(**data)
     except Exception as exc:
         raise HTTPException(

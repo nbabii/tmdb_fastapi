@@ -1,13 +1,14 @@
 import uuid
 from datetime import date, datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_watch_entry_repo
+from app.api.deps import get_tmdb_service, get_watch_entry_repo
 from app.main import app
 from app.repositories.watch_entry_repository import WatchEntryRepository
+from app.services.tmdb_service import TmdbService
 
 FIXED_UUID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 FIXED_DATETIME = datetime(2026, 3, 28, 12, 0, 0, tzinfo=timezone.utc)
@@ -50,6 +51,23 @@ def override_repo(mock_repo):
 
 def clear_repo_override():
     app.dependency_overrides.pop(get_watch_entry_repo, None)
+
+
+def make_mock_tmdb(*, details_return=None, details_error=None):
+    mock = MagicMock(spec=TmdbService)
+    if details_error:
+        mock.get_movie_details = AsyncMock(side_effect=details_error)
+    else:
+        mock.get_movie_details = AsyncMock(return_value=details_return)
+    return mock
+
+
+def override_tmdb(mock):
+    app.dependency_overrides[get_tmdb_service] = lambda: mock
+
+
+def clear_tmdb_override():
+    app.dependency_overrides.pop(get_tmdb_service, None)
 
 
 class TestCreateWatchEntry:
@@ -236,14 +254,12 @@ class TestGetWatchEntry:
     def test_get_by_id_returns_200(self, client: TestClient) -> None:
         entry = make_mock_entry()
         override_repo(make_mock_repo(existing=entry))
+        override_tmdb(make_mock_tmdb(details_return=MOCK_TMDB_DETAILS))
         try:
-            with patch(
-                "app.services.tmdb_client.tmdb_client.get_movie_details",
-                new=AsyncMock(return_value=MOCK_TMDB_DETAILS),
-            ):
-                response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
+            response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
         finally:
             clear_repo_override()
+            clear_tmdb_override()
 
         assert response.status_code == 200
         data = response.json()
@@ -260,14 +276,12 @@ class TestGetWatchEntry:
     def test_get_by_tmdb_id_returns_200(self, client: TestClient) -> None:
         entry = make_mock_entry()
         override_repo(make_mock_repo(existing=entry))
+        override_tmdb(make_mock_tmdb(details_return=MOCK_TMDB_DETAILS))
         try:
-            with patch(
-                "app.services.tmdb_client.tmdb_client.get_movie_details",
-                new=AsyncMock(return_value=MOCK_TMDB_DETAILS),
-            ):
-                response = client.get("/api/v1/watch-entries?tmdb_id=550")
+            response = client.get("/api/v1/watch-entries?tmdb_id=550")
         finally:
             clear_repo_override()
+            clear_tmdb_override()
 
         assert response.status_code == 200
         assert response.json()["tmdb_id"] == 550
@@ -276,14 +290,12 @@ class TestGetWatchEntry:
         entry = make_mock_entry()
         mock_repo = make_mock_repo(existing=entry)
         override_repo(mock_repo)
+        override_tmdb(make_mock_tmdb(details_return=MOCK_TMDB_DETAILS))
         try:
-            with patch(
-                "app.services.tmdb_client.tmdb_client.get_movie_details",
-                new=AsyncMock(return_value=MOCK_TMDB_DETAILS),
-            ):
-                response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}&tmdb_id=550")
+            response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}&tmdb_id=550")
         finally:
             clear_repo_override()
+            clear_tmdb_override()
 
         assert response.status_code == 200
         mock_repo.find_by_id.assert_called_once()
@@ -307,14 +319,12 @@ class TestGetWatchEntry:
     def test_tmdb_api_error_returns_502(self, client: TestClient) -> None:
         entry = make_mock_entry()
         override_repo(make_mock_repo(existing=entry))
+        override_tmdb(make_mock_tmdb(details_error=httpx.HTTPError("TMDB is down")))
         try:
-            with patch(
-                "app.services.tmdb_client.tmdb_client.get_movie_details",
-                new=AsyncMock(side_effect=httpx.HTTPError("TMDB is down")),
-            ):
-                response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
+            response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
         finally:
             clear_repo_override()
+            clear_tmdb_override()
 
         assert response.status_code == 502
         assert response.json()["detail"] == "An unexpected error occurred."

@@ -4,7 +4,7 @@ from app.core.config import settings
 from app.schemas.title import TitleType
 
 
-class TMDBClient:
+class TmdbService:
     def __init__(self) -> None:
         self._base_url = settings.TMDB_BASE_URL
         self._headers = {
@@ -32,7 +32,7 @@ class TMDBClient:
             params["year"] = year
 
         path = "/search/movie" if type == TitleType.movie else "/search/tv"
-        
+
         async with self._client() as client:
             response = await client.get(path, params=params)
             response.raise_for_status()
@@ -43,5 +43,3 @@ class TMDBClient:
             response = await client.get(f"/movie/{movie_id}")
             response.raise_for_status()
             return response.json()
-
-tmdb_client = TMDBClient()

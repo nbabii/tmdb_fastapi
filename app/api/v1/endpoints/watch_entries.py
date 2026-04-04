@@ -5,7 +5,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
-from app.api.deps import get_watch_entry_repo
+from app.api.deps import get_tmdb_service, get_watch_entry_repo
 from app.models.watched_movie import WatchedMovie
 from app.repositories.watch_entry_repository import WatchEntryRepository
 from app.schemas.watch_entry import (
@@ -15,7 +15,7 @@ from app.schemas.watch_entry import (
     WatchEntryResponse,
     WatchEntrySkipped,
 )
-from app.services.tmdb_client import tmdb_client
+from app.services.tmdb_service import TmdbService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -71,6 +71,7 @@ async def get_watch_entry(
     id: uuid.UUID | None = None,
     tmdb_id: int | None = None,
     repo: WatchEntryRepository = Depends(get_watch_entry_repo),
+    tmdb: TmdbService = Depends(get_tmdb_service),
 ) -> WatchEntryDetailResponse:
     if id is None and tmdb_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provide 'id' or 'tmdb_id'.")
@@ -84,7 +85,7 @@ async def get_watch_entry(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Watch entry not found.")
 
     try:
-        tmdb_data = await tmdb_client.get_movie_details(entry.tmdb_id)
+        tmdb_data = await tmdb.get_movie_details(entry.tmdb_id)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"TMDB API error: {exc}")
 

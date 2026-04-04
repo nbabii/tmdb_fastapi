@@ -38,4 +38,10 @@ class TMDBClient:
             response.raise_for_status()
             return response.json()
 
+    async def get_movie_details(self, movie_id: int) -> dict:
+        async with self._client() as client:
+            response = await client.get(f"/movie/{movie_id}")
+            response.raise_for_status()
+            return response.json()
+
 tmdb_client = TMDBClient()

@@ -323,7 +323,7 @@ class TestGetWatchEntry:
             clear_db_override()
 
         assert response.status_code == 502
-        assert "TMDB API error" in response.json()["detail"]
+        assert response.json()["detail"] == "An unexpected error occurred."
 
     def test_db_error_returns_500(self, client: TestClient) -> None:
         override_db(make_mock_db(scalar_error=Exception("DB connection lost")))

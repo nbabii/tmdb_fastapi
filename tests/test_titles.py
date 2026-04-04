@@ -93,4 +93,4 @@ class TestSearchTitlesEndpoint:
             response = client.get("/api/v1/titles/search?query=inception&type=movie")
 
         assert response.status_code == 502
-        assert "TMDB API error" in response.json()["detail"]
+        assert response.json()["detail"] == "An unexpected error occurred."

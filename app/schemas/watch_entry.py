@@ -20,6 +20,17 @@ class WatchEntryResponse(WatchEntryCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+class WatchEntrySkipped(BaseModel):
+    tmdb_id: int
+    title: str
+    reason: str
+
+
+class WatchEntryBulkResult(BaseModel):
+    created: list[WatchEntryResponse]
+    skipped: list[WatchEntrySkipped]
+
+
 class WatchEntryDetailResponse(BaseModel):
     id: uuid.UUID
     tmdb_id: int

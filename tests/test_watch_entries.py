@@ -21,14 +21,22 @@ VALID_PAYLOAD = {
 }
 
 
-def make_mock_db(*, existing=None, scalar_error=None):
+def make_mock_db(*, existing=None, existing_tmdb_ids=None, scalar_error=None):
     db = AsyncMock()
     db.add = MagicMock()
+    db.add_all = MagicMock()
 
     if scalar_error:
+        # apply to both scalar (GET) and scalars (POST bulk check)
         db.scalar.side_effect = scalar_error
+        db.scalars.side_effect = scalar_error
     else:
+        # GET: single-row lookup
         db.scalar.return_value = existing
+        # POST: bulk tmdb_id existence check — scalars().all() returns a list of ints
+        scalars_result = MagicMock()
+        scalars_result.all.return_value = list(existing_tmdb_ids or [])
+        db.scalars.return_value = scalars_result
 
     async def mock_refresh(entry):
         entry.id = FIXED_UUID
@@ -50,72 +58,113 @@ def clear_db_override():
 
 
 class TestCreateWatchEntry:
-    def test_create_returns_201(self, client: TestClient) -> None:
+    def test_create_single_returns_201(self, client: TestClient) -> None:
         override_db(make_mock_db())
         try:
-            response = client.post("/api/v1/watch-entries", json=VALID_PAYLOAD)
+            response = client.post("/api/v1/watch-entries", json=[VALID_PAYLOAD])
         finally:
             clear_db_override()
 
         assert response.status_code == 201
         data = response.json()
-        assert data["tmdb_id"] == 550
-        assert data["title"] == "Fight Club"
-        assert data["my_rating"] == 9
-        assert data["id"] == str(FIXED_UUID)
-        assert "created_at" in data
+        assert len(data["created"]) == 1
+        assert data["skipped"] == []
+        entry = data["created"][0]
+        assert entry["tmdb_id"] == 550
+        assert entry["title"] == "Fight Club"
+        assert entry["my_rating"] == 9
+        assert entry["id"] == str(FIXED_UUID)
+        assert "created_at" in entry
+
+    def test_create_multiple_returns_201(self, client: TestClient) -> None:
+        payload = [VALID_PAYLOAD, {**VALID_PAYLOAD, "tmdb_id": 999, "title": "Se7en"}]
+        override_db(make_mock_db())
+        try:
+            response = client.post("/api/v1/watch-entries", json=payload)
+        finally:
+            clear_db_override()
+
+        assert response.status_code == 201
+        data = response.json()
+        assert len(data["created"]) == 2
+        assert data["skipped"] == []
 
     def test_create_minimal_payload_returns_201(self, client: TestClient) -> None:
         override_db(make_mock_db())
         try:
             response = client.post(
                 "/api/v1/watch-entries",
-                json={"tmdb_id": 550, "title": "Fight Club"},
+                json=[{"tmdb_id": 550, "title": "Fight Club"}],
             )
         finally:
             clear_db_override()
 
         assert response.status_code == 201
-        data = response.json()
-        assert data["tmdb_id"] == 550
-        assert data["my_rating"] is None
-        assert data["my_overview"] is None
-        assert data["my_date_watched"] is None
+        entry = response.json()["created"][0]
+        assert entry["tmdb_id"] == 550
+        assert entry["my_rating"] is None
+        assert entry["my_overview"] is None
+        assert entry["my_date_watched"] is None
 
-    def test_duplicate_tmdb_id_returns_409(self, client: TestClient) -> None:
-        override_db(make_mock_db(existing=MagicMock()))
+    def test_all_duplicates_returns_409(self, client: TestClient) -> None:
+        override_db(make_mock_db(existing_tmdb_ids=[550]))
         try:
-            response = client.post("/api/v1/watch-entries", json=VALID_PAYLOAD)
+            response = client.post("/api/v1/watch-entries", json=[VALID_PAYLOAD])
         finally:
             clear_db_override()
 
         assert response.status_code == 409
         detail = response.json()["detail"]
-        assert "550" in detail
-        assert "already in the database" in detail
+        assert isinstance(detail, list)
+        assert detail[0]["tmdb_id"] == 550
+        assert "already in the database" in detail[0]["reason"]
+
+    def test_partial_duplicate_returns_207(self, client: TestClient) -> None:
+        payload = [VALID_PAYLOAD, {**VALID_PAYLOAD, "tmdb_id": 999, "title": "Se7en"}]
+        override_db(make_mock_db(existing_tmdb_ids=[550]))
+        try:
+            response = client.post("/api/v1/watch-entries", json=payload)
+        finally:
+            clear_db_override()
+
+        assert response.status_code == 207
+        data = response.json()
+        assert len(data["created"]) == 1
+        assert data["created"][0]["tmdb_id"] == 999
+        assert len(data["skipped"]) == 1
+        assert data["skipped"][0]["tmdb_id"] == 550
+
+    def test_empty_body_returns_422(self, client: TestClient) -> None:
+        override_db(make_mock_db())
+        try:
+            response = client.post("/api/v1/watch-entries", json=[])
+        finally:
+            clear_db_override()
+
+        assert response.status_code == 422
 
     def test_missing_tmdb_id_returns_422(self, client: TestClient) -> None:
-        payload = {k: v for k, v in VALID_PAYLOAD.items() if k != "tmdb_id"}
+        payload = [{k: v for k, v in VALID_PAYLOAD.items() if k != "tmdb_id"}]
         response = client.post("/api/v1/watch-entries", json=payload)
 
         assert response.status_code == 422
 
     def test_missing_title_returns_422(self, client: TestClient) -> None:
-        payload = {k: v for k, v in VALID_PAYLOAD.items() if k != "title"}
+        payload = [{k: v for k, v in VALID_PAYLOAD.items() if k != "title"}]
         response = client.post("/api/v1/watch-entries", json=payload)
 
         assert response.status_code == 422
 
     def test_my_rating_below_minimum_returns_422(self, client: TestClient) -> None:
         response = client.post(
-            "/api/v1/watch-entries", json={**VALID_PAYLOAD, "my_rating": 0}
+            "/api/v1/watch-entries", json=[{**VALID_PAYLOAD, "my_rating": 0}]
         )
 
         assert response.status_code == 422
 
     def test_my_rating_above_maximum_returns_422(self, client: TestClient) -> None:
         response = client.post(
-            "/api/v1/watch-entries", json={**VALID_PAYLOAD, "my_rating": 11}
+            "/api/v1/watch-entries", json=[{**VALID_PAYLOAD, "my_rating": 11}]
         )
 
         assert response.status_code == 422
@@ -124,7 +173,7 @@ class TestCreateWatchEntry:
         override_db(make_mock_db())
         try:
             response = client.post(
-                "/api/v1/watch-entries", json={**VALID_PAYLOAD, "my_rating": 1}
+                "/api/v1/watch-entries", json=[{**VALID_PAYLOAD, "my_rating": 1}]
             )
         finally:
             clear_db_override()
@@ -135,7 +184,7 @@ class TestCreateWatchEntry:
         override_db(make_mock_db())
         try:
             response = client.post(
-                "/api/v1/watch-entries", json={**VALID_PAYLOAD, "my_rating": 10}
+                "/api/v1/watch-entries", json=[{**VALID_PAYLOAD, "my_rating": 10}]
             )
         finally:
             clear_db_override()
@@ -144,11 +193,9 @@ class TestCreateWatchEntry:
 
     def test_db_error_returns_500(self, client: TestClient) -> None:
         override_db(make_mock_db(scalar_error=Exception("DB connection lost")))
-        # raise_server_exceptions=False prevents TestClient from re-raising the
-        # exception so we can inspect the HTTP response status code
         no_raise_client = TestClient(app, raise_server_exceptions=False)
         try:
-            response = no_raise_client.post("/api/v1/watch-entries", json=VALID_PAYLOAD)
+            response = no_raise_client.post("/api/v1/watch-entries", json=[VALID_PAYLOAD])
         finally:
             clear_db_override()
 

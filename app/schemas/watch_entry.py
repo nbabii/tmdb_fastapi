@@ -20,6 +20,34 @@ class WatchEntryResponse(WatchEntryCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+class WatchEntrySkipped(BaseModel):
+    tmdb_id: int
+    title: str
+    reason: str
+
+
+class WatchEntryBulkResult(BaseModel):
+    created: list[WatchEntryResponse]
+    skipped: list[WatchEntrySkipped]
+
+
+class WatchEntryListItem(BaseModel):
+    id: uuid.UUID
+    tmdb_id: int
+    title: str
+    release_date: date | None = None
+    my_rating: int | None = None
+    my_overview: str | None = None
+    my_date_watched: date | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WatchEntryListResponse(BaseModel):
+    items: list[WatchEntryListItem]
+    total: int
+
+
 class WatchEntryDetailResponse(BaseModel):
     id: uuid.UUID
     tmdb_id: int

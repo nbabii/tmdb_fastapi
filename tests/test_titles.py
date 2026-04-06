@@ -1,8 +1,28 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
 
+from app.api.deps import get_tmdb_service
+from app.main import app
+from app.services.tmdb_service import TmdbService
 from tests.conftest import MOCK_MOVIE_RESPONSE, MOCK_TV_RESPONSE
+
+
+def make_mock_tmdb(*, search_return=None, search_error=None):
+    mock = MagicMock(spec=TmdbService)
+    if search_error:
+        mock.search_titles = AsyncMock(side_effect=search_error)
+    else:
+        mock.search_titles = AsyncMock(return_value=search_return)
+    return mock
+
+
+def override_tmdb(mock):
+    app.dependency_overrides[get_tmdb_service] = lambda: mock
+
+
+def clear_tmdb_override():
+    app.dependency_overrides.pop(get_tmdb_service, None)
 
 
 class TestHealthEndpoint:
@@ -15,11 +35,11 @@ class TestHealthEndpoint:
 
 class TestSearchTitlesEndpoint:
     def test_search_movie_returns_200(self, client: TestClient) -> None:
-        with patch(
-            "app.services.tmdb_client.tmdb_client.search_titles",
-            new=AsyncMock(return_value=MOCK_MOVIE_RESPONSE),
-        ):
+        override_tmdb(make_mock_tmdb(search_return=MOCK_MOVIE_RESPONSE))
+        try:
             response = client.get("/api/v1/titles/search?query=fight+club&type=movie")
+        finally:
+            clear_tmdb_override()
 
         assert response.status_code == 200
         data = response.json()
@@ -28,35 +48,37 @@ class TestSearchTitlesEndpoint:
         assert data["results"][0]["title"] == "Fight Club"
 
     def test_search_tv_returns_200(self, client: TestClient) -> None:
-        with patch(
-            "app.services.tmdb_client.tmdb_client.search_titles",
-            new=AsyncMock(return_value=MOCK_TV_RESPONSE),
-        ):
+        override_tmdb(make_mock_tmdb(search_return=MOCK_TV_RESPONSE))
+        try:
             response = client.get("/api/v1/titles/search?query=breaking+bad&type=tv")
+        finally:
+            clear_tmdb_override()
 
         assert response.status_code == 200
         data = response.json()
         assert data["results"][0]["title"] == "Breaking Bad"
 
     def test_search_with_year_param(self, client: TestClient) -> None:
-        with patch(
-            "app.services.tmdb_client.tmdb_client.search_titles",
-            new=AsyncMock(return_value=MOCK_MOVIE_RESPONSE),
-        ) as mock:
+        mock = make_mock_tmdb(search_return=MOCK_MOVIE_RESPONSE)
+        override_tmdb(mock)
+        try:
             client.get("/api/v1/titles/search?query=fight+club&type=movie&year=1999")
+        finally:
+            clear_tmdb_override()
 
-        mock.assert_called_once_with(
+        mock.search_titles.assert_called_once_with(
             query="fight club", type="movie", page=1, year=1999
         )
 
     def test_search_with_page_param(self, client: TestClient) -> None:
-        with patch(
-            "app.services.tmdb_client.tmdb_client.search_titles",
-            new=AsyncMock(return_value=MOCK_MOVIE_RESPONSE),
-        ) as mock:
+        mock = make_mock_tmdb(search_return=MOCK_MOVIE_RESPONSE)
+        override_tmdb(mock)
+        try:
             client.get("/api/v1/titles/search?query=fight+club&type=movie&page=2")
+        finally:
+            clear_tmdb_override()
 
-        mock.assert_called_once_with(
+        mock.search_titles.assert_called_once_with(
             query="fight club", type="movie", page=2, year=None
         )
 
@@ -86,11 +108,11 @@ class TestSearchTitlesEndpoint:
         assert response.status_code == 422
 
     def test_tmdb_error_returns_502(self, client: TestClient) -> None:
-        with patch(
-            "app.services.tmdb_client.tmdb_client.search_titles",
-            new=AsyncMock(side_effect=Exception("TMDB is down")),
-        ):
+        override_tmdb(make_mock_tmdb(search_error=Exception("TMDB is down")))
+        try:
             response = client.get("/api/v1/titles/search?query=inception&type=movie")
+        finally:
+            clear_tmdb_override()
 
         assert response.status_code == 502
-        assert "TMDB API error" in response.json()["detail"]
+        assert response.json()["detail"] == "An unexpected error occurred."

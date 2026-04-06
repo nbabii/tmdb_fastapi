@@ -1,12 +1,14 @@
 import uuid
 from datetime import date, datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 from fastapi.testclient import TestClient
 
-from app.core.db import get_db
+from app.api.deps import get_tmdb_service, get_watch_entry_repo
 from app.main import app
+from app.repositories.watch_entry_repository import WatchEntryRepository
+from app.services.tmdb_service import TmdbService
 
 FIXED_UUID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 FIXED_DATETIME = datetime(2026, 3, 28, 12, 0, 0, tzinfo=timezone.utc)
@@ -21,136 +23,196 @@ VALID_PAYLOAD = {
 }
 
 
-def make_mock_db(*, existing=None, scalar_error=None):
-    db = AsyncMock()
-    db.add = MagicMock()
+def make_mock_repo(*, existing=None, existing_tmdb_ids=None, error=None):
+    repo = MagicMock(spec=WatchEntryRepository)
 
-    if scalar_error:
-        db.scalar.side_effect = scalar_error
+    if error:
+        repo.find_existing_tmdb_ids = AsyncMock(side_effect=error)
+        repo.find_by_id = AsyncMock(side_effect=error)
+        repo.find_by_tmdb_id = AsyncMock(side_effect=error)
+        repo.list_all = AsyncMock(side_effect=error)
     else:
-        db.scalar.return_value = existing
+        repo.find_existing_tmdb_ids = AsyncMock(return_value=set(existing_tmdb_ids or []))
+        repo.find_by_id = AsyncMock(return_value=existing)
+        repo.find_by_tmdb_id = AsyncMock(return_value=existing)
+        repo.list_all = AsyncMock(return_value=[])
 
-    async def mock_refresh(entry):
-        entry.id = FIXED_UUID
-        entry.created_at = FIXED_DATETIME
+    async def _bulk_create(entries):
+        for entry in entries:
+            entry.id = FIXED_UUID
+            entry.created_at = FIXED_DATETIME
+        return entries
 
-    db.refresh.side_effect = mock_refresh
-    return db
-
-
-def override_db(mock_db):
-    async def _dep():
-        yield mock_db
-
-    app.dependency_overrides[get_db] = _dep
+    repo.bulk_create = AsyncMock(side_effect=_bulk_create)
+    return repo
 
 
-def clear_db_override():
-    app.dependency_overrides.pop(get_db, None)
+def override_repo(mock_repo):
+    app.dependency_overrides[get_watch_entry_repo] = lambda: mock_repo
+
+
+def clear_repo_override():
+    app.dependency_overrides.pop(get_watch_entry_repo, None)
+
+
+def make_mock_tmdb(*, details_return=None, details_error=None):
+    mock = MagicMock(spec=TmdbService)
+    if details_error:
+        mock.get_movie_details = AsyncMock(side_effect=details_error)
+    else:
+        mock.get_movie_details = AsyncMock(return_value=details_return)
+    return mock
+
+
+def override_tmdb(mock):
+    app.dependency_overrides[get_tmdb_service] = lambda: mock
+
+
+def clear_tmdb_override():
+    app.dependency_overrides.pop(get_tmdb_service, None)
 
 
 class TestCreateWatchEntry:
-    def test_create_returns_201(self, client: TestClient) -> None:
-        override_db(make_mock_db())
+    def test_create_single_returns_201(self, client: TestClient) -> None:
+        override_repo(make_mock_repo())
         try:
-            response = client.post("/api/v1/watch-entries", json=VALID_PAYLOAD)
+            response = client.post("/api/v1/watch-entries", json=[VALID_PAYLOAD])
         finally:
-            clear_db_override()
+            clear_repo_override()
 
         assert response.status_code == 201
         data = response.json()
-        assert data["tmdb_id"] == 550
-        assert data["title"] == "Fight Club"
-        assert data["my_rating"] == 9
-        assert data["id"] == str(FIXED_UUID)
-        assert "created_at" in data
+        assert len(data["created"]) == 1
+        assert data["skipped"] == []
+        entry = data["created"][0]
+        assert entry["tmdb_id"] == 550
+        assert entry["title"] == "Fight Club"
+        assert entry["my_rating"] == 9
+        assert entry["id"] == str(FIXED_UUID)
+        assert "created_at" in entry
+
+    def test_create_multiple_returns_201(self, client: TestClient) -> None:
+        payload = [VALID_PAYLOAD, {**VALID_PAYLOAD, "tmdb_id": 999, "title": "Se7en"}]
+        override_repo(make_mock_repo())
+        try:
+            response = client.post("/api/v1/watch-entries", json=payload)
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 201
+        data = response.json()
+        assert len(data["created"]) == 2
+        assert data["skipped"] == []
 
     def test_create_minimal_payload_returns_201(self, client: TestClient) -> None:
-        override_db(make_mock_db())
+        override_repo(make_mock_repo())
         try:
             response = client.post(
                 "/api/v1/watch-entries",
-                json={"tmdb_id": 550, "title": "Fight Club"},
+                json=[{"tmdb_id": 550, "title": "Fight Club"}],
             )
         finally:
-            clear_db_override()
+            clear_repo_override()
 
         assert response.status_code == 201
-        data = response.json()
-        assert data["tmdb_id"] == 550
-        assert data["my_rating"] is None
-        assert data["my_overview"] is None
-        assert data["my_date_watched"] is None
+        entry = response.json()["created"][0]
+        assert entry["tmdb_id"] == 550
+        assert entry["my_rating"] is None
+        assert entry["my_overview"] is None
+        assert entry["my_date_watched"] is None
 
-    def test_duplicate_tmdb_id_returns_409(self, client: TestClient) -> None:
-        override_db(make_mock_db(existing=MagicMock()))
+    def test_all_duplicates_returns_409(self, client: TestClient) -> None:
+        override_repo(make_mock_repo(existing_tmdb_ids=[550]))
         try:
-            response = client.post("/api/v1/watch-entries", json=VALID_PAYLOAD)
+            response = client.post("/api/v1/watch-entries", json=[VALID_PAYLOAD])
         finally:
-            clear_db_override()
+            clear_repo_override()
 
         assert response.status_code == 409
         detail = response.json()["detail"]
-        assert "550" in detail
-        assert "already in the database" in detail
+        assert isinstance(detail, list)
+        assert detail[0]["tmdb_id"] == 550
+        assert "already in the database" in detail[0]["reason"]
+
+    def test_partial_duplicate_returns_207(self, client: TestClient) -> None:
+        payload = [VALID_PAYLOAD, {**VALID_PAYLOAD, "tmdb_id": 999, "title": "Se7en"}]
+        override_repo(make_mock_repo(existing_tmdb_ids=[550]))
+        try:
+            response = client.post("/api/v1/watch-entries", json=payload)
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 207
+        data = response.json()
+        assert len(data["created"]) == 1
+        assert data["created"][0]["tmdb_id"] == 999
+        assert len(data["skipped"]) == 1
+        assert data["skipped"][0]["tmdb_id"] == 550
+
+    def test_empty_body_returns_422(self, client: TestClient) -> None:
+        override_repo(make_mock_repo())
+        try:
+            response = client.post("/api/v1/watch-entries", json=[])
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 422
 
     def test_missing_tmdb_id_returns_422(self, client: TestClient) -> None:
-        payload = {k: v for k, v in VALID_PAYLOAD.items() if k != "tmdb_id"}
+        payload = [{k: v for k, v in VALID_PAYLOAD.items() if k != "tmdb_id"}]
         response = client.post("/api/v1/watch-entries", json=payload)
 
         assert response.status_code == 422
 
     def test_missing_title_returns_422(self, client: TestClient) -> None:
-        payload = {k: v for k, v in VALID_PAYLOAD.items() if k != "title"}
+        payload = [{k: v for k, v in VALID_PAYLOAD.items() if k != "title"}]
         response = client.post("/api/v1/watch-entries", json=payload)
 
         assert response.status_code == 422
 
     def test_my_rating_below_minimum_returns_422(self, client: TestClient) -> None:
         response = client.post(
-            "/api/v1/watch-entries", json={**VALID_PAYLOAD, "my_rating": 0}
+            "/api/v1/watch-entries", json=[{**VALID_PAYLOAD, "my_rating": 0}]
         )
 
         assert response.status_code == 422
 
     def test_my_rating_above_maximum_returns_422(self, client: TestClient) -> None:
         response = client.post(
-            "/api/v1/watch-entries", json={**VALID_PAYLOAD, "my_rating": 11}
+            "/api/v1/watch-entries", json=[{**VALID_PAYLOAD, "my_rating": 11}]
         )
 
         assert response.status_code == 422
 
     def test_my_rating_at_minimum_boundary_returns_201(self, client: TestClient) -> None:
-        override_db(make_mock_db())
+        override_repo(make_mock_repo())
         try:
             response = client.post(
-                "/api/v1/watch-entries", json={**VALID_PAYLOAD, "my_rating": 1}
+                "/api/v1/watch-entries", json=[{**VALID_PAYLOAD, "my_rating": 1}]
             )
         finally:
-            clear_db_override()
+            clear_repo_override()
 
         assert response.status_code == 201
 
     def test_my_rating_at_maximum_boundary_returns_201(self, client: TestClient) -> None:
-        override_db(make_mock_db())
+        override_repo(make_mock_repo())
         try:
             response = client.post(
-                "/api/v1/watch-entries", json={**VALID_PAYLOAD, "my_rating": 10}
+                "/api/v1/watch-entries", json=[{**VALID_PAYLOAD, "my_rating": 10}]
             )
         finally:
-            clear_db_override()
+            clear_repo_override()
 
         assert response.status_code == 201
 
     def test_db_error_returns_500(self, client: TestClient) -> None:
-        override_db(make_mock_db(scalar_error=Exception("DB connection lost")))
-        # raise_server_exceptions=False prevents TestClient from re-raising the
-        # exception so we can inspect the HTTP response status code
+        override_repo(make_mock_repo(error=Exception("DB connection lost")))
         no_raise_client = TestClient(app, raise_server_exceptions=False)
         try:
-            response = no_raise_client.post("/api/v1/watch-entries", json=VALID_PAYLOAD)
+            response = no_raise_client.post("/api/v1/watch-entries", json=[VALID_PAYLOAD])
         finally:
-            clear_db_override()
+            clear_repo_override()
 
         assert response.status_code == 500
 
@@ -193,15 +255,13 @@ def make_mock_entry(**overrides) -> MagicMock:
 class TestGetWatchEntry:
     def test_get_by_id_returns_200(self, client: TestClient) -> None:
         entry = make_mock_entry()
-        override_db(make_mock_db(existing=entry))
+        override_repo(make_mock_repo(existing=entry))
+        override_tmdb(make_mock_tmdb(details_return=MOCK_TMDB_DETAILS))
         try:
-            with patch(
-                "app.services.tmdb_client.tmdb_client.get_movie_details",
-                new=AsyncMock(return_value=MOCK_TMDB_DETAILS),
-            ):
-                response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
+            response = client.get(f"/api/v1/watch-entry?id={FIXED_UUID}")
         finally:
-            clear_db_override()
+            clear_repo_override()
+            clear_tmdb_override()
 
         assert response.status_code == 200
         data = response.json()
@@ -217,73 +277,146 @@ class TestGetWatchEntry:
 
     def test_get_by_tmdb_id_returns_200(self, client: TestClient) -> None:
         entry = make_mock_entry()
-        override_db(make_mock_db(existing=entry))
+        override_repo(make_mock_repo(existing=entry))
+        override_tmdb(make_mock_tmdb(details_return=MOCK_TMDB_DETAILS))
         try:
-            with patch(
-                "app.services.tmdb_client.tmdb_client.get_movie_details",
-                new=AsyncMock(return_value=MOCK_TMDB_DETAILS),
-            ):
-                response = client.get("/api/v1/watch-entries?tmdb_id=550")
+            response = client.get("/api/v1/watch-entry?tmdb_id=550")
         finally:
-            clear_db_override()
+            clear_repo_override()
+            clear_tmdb_override()
 
         assert response.status_code == 200
         assert response.json()["tmdb_id"] == 550
 
     def test_id_takes_precedence_over_tmdb_id(self, client: TestClient) -> None:
         entry = make_mock_entry()
-        mock_db = make_mock_db(existing=entry)
-        override_db(mock_db)
+        mock_repo = make_mock_repo(existing=entry)
+        override_repo(mock_repo)
+        override_tmdb(make_mock_tmdb(details_return=MOCK_TMDB_DETAILS))
         try:
-            with patch(
-                "app.services.tmdb_client.tmdb_client.get_movie_details",
-                new=AsyncMock(return_value=MOCK_TMDB_DETAILS),
-            ):
-                response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}&tmdb_id=550")
+            response = client.get(f"/api/v1/watch-entry?id={FIXED_UUID}&tmdb_id=550")
         finally:
-            clear_db_override()
+            clear_repo_override()
+            clear_tmdb_override()
 
         assert response.status_code == 200
-        # scalar should have been called with the id-based query (called once)
-        mock_db.scalar.assert_called_once()
+        mock_repo.find_by_id.assert_called_once()
 
     def test_no_params_returns_400(self, client: TestClient) -> None:
-        response = client.get("/api/v1/watch-entries")
+        response = client.get("/api/v1/watch-entry")
 
         assert response.status_code == 400
         assert "id" in response.json()["detail"] or "tmdb_id" in response.json()["detail"]
 
     def test_entry_not_found_returns_404(self, client: TestClient) -> None:
-        override_db(make_mock_db(existing=None))
+        override_repo(make_mock_repo(existing=None))
         try:
-            response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
+            response = client.get(f"/api/v1/watch-entry?id={FIXED_UUID}")
         finally:
-            clear_db_override()
+            clear_repo_override()
 
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
     def test_tmdb_api_error_returns_502(self, client: TestClient) -> None:
         entry = make_mock_entry()
-        override_db(make_mock_db(existing=entry))
+        override_repo(make_mock_repo(existing=entry))
+        override_tmdb(make_mock_tmdb(details_error=httpx.HTTPError("TMDB is down")))
         try:
-            with patch(
-                "app.services.tmdb_client.tmdb_client.get_movie_details",
-                new=AsyncMock(side_effect=httpx.HTTPError("TMDB is down")),
-            ):
-                response = client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
+            response = client.get(f"/api/v1/watch-entry?id={FIXED_UUID}")
         finally:
-            clear_db_override()
+            clear_repo_override()
+            clear_tmdb_override()
 
         assert response.status_code == 502
-        assert "TMDB API error" in response.json()["detail"]
+        assert response.json()["detail"] == "An unexpected error occurred."
 
     def test_db_error_returns_500(self, client: TestClient) -> None:
-        override_db(make_mock_db(scalar_error=Exception("DB connection lost")))
+        override_repo(make_mock_repo(error=Exception("DB connection lost")))
         no_raise_client = TestClient(app, raise_server_exceptions=False)
         try:
-            response = no_raise_client.get(f"/api/v1/watch-entries?id={FIXED_UUID}")
+            response = no_raise_client.get(f"/api/v1/watch-entry?id={FIXED_UUID}")
         finally:
-            clear_db_override()
+            clear_repo_override()
+
+        assert response.status_code == 500
+
+
+class TestListWatchEntries:
+    def test_empty_db_returns_200_with_empty_list(self, client: TestClient) -> None:
+        override_repo(make_mock_repo())
+        try:
+            response = client.get("/api/v1/watch-entries")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["items"] == []
+        assert data["total"] == 0
+
+    def test_returns_entries_with_correct_fields(self, client: TestClient) -> None:
+        entry = make_mock_entry()
+        mock_repo = make_mock_repo()
+        mock_repo.list_all = AsyncMock(return_value=[entry])
+        override_repo(mock_repo)
+        try:
+            response = client.get("/api/v1/watch-entries")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        item = data["items"][0]
+        assert item["id"] == str(FIXED_UUID)
+        assert item["tmdb_id"] == 550
+        assert item["title"] == "Fight Club"
+        assert item["my_rating"] == 9
+        assert item["release_date"] == "1999-10-15"
+        assert item["my_date_watched"] == "2026-03-28"
+        assert "created_at" not in item
+
+    def test_limit_param_is_respected(self, client: TestClient) -> None:
+        entries = [make_mock_entry(tmdb_id=i, title=f"Movie {i}") for i in range(3)]
+        mock_repo = make_mock_repo()
+        mock_repo.list_all = AsyncMock(return_value=[entries[0]])
+        override_repo(mock_repo)
+        try:
+            response = client.get("/api/v1/watch-entries?limit=1")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+        mock_repo.list_all.assert_called_once_with(limit=1)
+
+    def test_limit_zero_returns_422(self, client: TestClient) -> None:
+        response = client.get("/api/v1/watch-entries?limit=0")
+
+        assert response.status_code == 422
+
+    def test_limit_above_max_returns_422(self, client: TestClient) -> None:
+        response = client.get("/api/v1/watch-entries?limit=101")
+
+        assert response.status_code == 422
+
+    def test_default_limit_is_10(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo()
+        override_repo(mock_repo)
+        try:
+            client.get("/api/v1/watch-entries")
+        finally:
+            clear_repo_override()
+
+        mock_repo.list_all.assert_called_once_with(limit=10)
+
+    def test_db_error_returns_500(self, client: TestClient) -> None:
+        override_repo(make_mock_repo(error=Exception("DB connection lost")))
+        no_raise_client = TestClient(app, raise_server_exceptions=False)
+        try:
+            response = no_raise_client.get("/api/v1/watch-entries")
+        finally:
+            clear_repo_override()
 
         assert response.status_code == 500

@@ -31,6 +31,23 @@ class WatchEntryBulkResult(BaseModel):
     skipped: list[WatchEntrySkipped]
 
 
+class WatchEntryListItem(BaseModel):
+    id: uuid.UUID
+    tmdb_id: int
+    title: str
+    release_date: date | None = None
+    my_rating: int | None = None
+    my_overview: str | None = None
+    my_date_watched: date | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WatchEntryListResponse(BaseModel):
+    items: list[WatchEntryListItem]
+    total: int
+
+
 class WatchEntryDetailResponse(BaseModel):
     id: uuid.UUID
     tmdb_id: int

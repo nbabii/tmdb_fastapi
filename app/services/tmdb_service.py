@@ -1,19 +1,14 @@
 import httpx
+from collections.abc import Callable
 
-from app.core.config import settings
 from app.schemas.title import TitleType
+
+ClientFactory = Callable[[], httpx.AsyncClient]
 
 
 class TmdbService:
-    def __init__(self) -> None:
-        self._base_url = settings.TMDB_BASE_URL
-        self._headers = {
-            "accept": "application/json",
-            "Authorization": f"Bearer {settings.TMDB_API_KEY}",
-        }
-
-    def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url=self._base_url, headers=self._headers)
+    def __init__(self, client_factory: ClientFactory) -> None:
+        self._client_factory = client_factory
 
     async def search_titles(
         self,
@@ -33,13 +28,13 @@ class TmdbService:
 
         path = "/search/movie" if type == TitleType.movie else "/search/tv"
 
-        async with self._client() as client:
+        async with self._client_factory() as client:
             response = await client.get(path, params=params)
             response.raise_for_status()
             return response.json()
 
     async def get_movie_details(self, movie_id: int) -> dict:
-        async with self._client() as client:
+        async with self._client_factory() as client:
             response = await client.get(f"/movie/{movie_id}")
             response.raise_for_status()
             return response.json()

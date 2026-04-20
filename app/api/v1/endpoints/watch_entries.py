@@ -7,12 +7,14 @@ from app.api.deps import get_watch_entry_repo
 from app.models.watched_movie import WatchedMovie
 from app.repositories.watch_entry_repository import WatchEntryRepository
 from app.schemas.watch_entry import (
+    SortOrder,
     WatchEntryBulkResult,
     WatchEntryCreate,
     WatchEntryListItem,
     WatchEntryListResponse,
     WatchEntryResponse,
     WatchEntrySkipped,
+    WatchEntrySortBy,
 )
 
 router = APIRouter()
@@ -67,11 +69,19 @@ async def create_watch_entries(
 @router.get("", response_model=WatchEntryListResponse)
 async def list_watch_entries(
     limit: int = Query(default=10, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    sort_by: WatchEntrySortBy = Query(default=WatchEntrySortBy.my_rating),
+    sort_order: SortOrder = Query(default=SortOrder.desc),
     repo: WatchEntryRepository = Depends(get_watch_entry_repo),
 ) -> WatchEntryListResponse:
-    entries = await repo.list_all(limit=limit)
-    logger.info("Watch entries listed: count=%d limit=%d", len(entries), limit)
+    total, entries = (
+        await repo.count_all(),
+        await repo.list_all(limit=limit, offset=offset, sort_by=sort_by, sort_order=sort_order),
+    )
+    logger.info("Watch entries listed: count=%d limit=%d offset=%d total=%d", len(entries), limit, offset, total)
     return WatchEntryListResponse(
         items=[WatchEntryListItem.model_validate(e) for e in entries],
-        total=len(entries),
+        total=total,
+        limit=limit,
+        offset=offset,
     )

@@ -1,7 +1,18 @@
 import uuid
 from datetime import date, datetime
+from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class WatchEntrySortBy(str, Enum):
+    my_rating = "my_rating"
+    my_date_watched = "my_date_watched"
+
+
+class SortOrder(str, Enum):
+    asc = "asc"
+    desc = "desc"
 
 
 class WatchEntryCreate(BaseModel):
@@ -46,6 +57,8 @@ class WatchEntryListItem(BaseModel):
 class WatchEntryListResponse(BaseModel):
     items: list[WatchEntryListItem]
     total: int
+    limit: int
+    offset: int
 
 
 class WatchEntryDetailResponse(BaseModel):

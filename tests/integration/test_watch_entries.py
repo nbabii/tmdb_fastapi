@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_tmdb_service, get_watch_entry_repo
 from app.main import app
 from app.repositories.watch_entry_repository import WatchEntryRepository
+from app.schemas.watch_entry import SortOrder, WatchEntrySortBy
 from app.services.tmdb_service import TmdbService
 
 FIXED_UUID = uuid.UUID("12345678-1234-5678-1234-567812345678")
@@ -23,7 +24,7 @@ VALID_PAYLOAD = {
 }
 
 
-def make_mock_repo(*, existing=None, existing_tmdb_ids=None, error=None):
+def make_mock_repo(*, existing=None, existing_tmdb_ids=None, error=None, total_count=0):
     repo = MagicMock(spec=WatchEntryRepository)
 
     if error:
@@ -31,11 +32,13 @@ def make_mock_repo(*, existing=None, existing_tmdb_ids=None, error=None):
         repo.find_by_id = AsyncMock(side_effect=error)
         repo.find_by_tmdb_id = AsyncMock(side_effect=error)
         repo.list_all = AsyncMock(side_effect=error)
+        repo.count_all = AsyncMock(side_effect=error)
     else:
         repo.find_existing_tmdb_ids = AsyncMock(return_value=set(existing_tmdb_ids or []))
         repo.find_by_id = AsyncMock(return_value=existing)
         repo.find_by_tmdb_id = AsyncMock(return_value=existing)
         repo.list_all = AsyncMock(return_value=[])
+        repo.count_all = AsyncMock(return_value=total_count)
 
     async def _bulk_create(entries):
         for entry in entries:
@@ -354,10 +357,12 @@ class TestListWatchEntries:
         data = response.json()
         assert data["items"] == []
         assert data["total"] == 0
+        assert data["limit"] == 10
+        assert data["offset"] == 0
 
     def test_returns_entries_with_correct_fields(self, client: TestClient) -> None:
         entry = make_mock_entry()
-        mock_repo = make_mock_repo()
+        mock_repo = make_mock_repo(total_count=1)
         mock_repo.list_all = AsyncMock(return_value=[entry])
         override_repo(mock_repo)
         try:
@@ -388,8 +393,8 @@ class TestListWatchEntries:
             clear_repo_override()
 
         assert response.status_code == 200
-        assert response.json()["total"] == 1
-        mock_repo.list_all.assert_called_once_with(limit=1)
+        assert response.json()["total"] == 0
+        mock_repo.list_all.assert_called_once_with(limit=1, offset=0, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.desc)
 
     def test_limit_zero_returns_422(self, client: TestClient) -> None:
         response = client.get("/api/v1/watch-entries?limit=0")
@@ -409,7 +414,7 @@ class TestListWatchEntries:
         finally:
             clear_repo_override()
 
-        mock_repo.list_all.assert_called_once_with(limit=10)
+        mock_repo.list_all.assert_called_once_with(limit=10, offset=0, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.desc)
 
     def test_db_error_returns_500(self, client: TestClient) -> None:
         override_repo(make_mock_repo(error=Exception("DB connection lost")))
@@ -420,3 +425,134 @@ class TestListWatchEntries:
             clear_repo_override()
 
         assert response.status_code == 500
+
+    def test_offset_param_is_passed_to_repo(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo(total_count=5)
+        override_repo(mock_repo)
+        try:
+            client.get("/api/v1/watch-entries?limit=2&offset=3")
+        finally:
+            clear_repo_override()
+
+        mock_repo.list_all.assert_called_once_with(limit=2, offset=3, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.desc)
+
+    def test_default_offset_is_zero(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo()
+        override_repo(mock_repo)
+        try:
+            client.get("/api/v1/watch-entries?limit=5")
+        finally:
+            clear_repo_override()
+
+        mock_repo.list_all.assert_called_once_with(limit=5, offset=0, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.desc)
+
+    def test_offset_negative_returns_422(self, client: TestClient) -> None:
+        response = client.get("/api/v1/watch-entries?offset=-1")
+
+        assert response.status_code == 422
+
+    def test_total_reflects_db_count_not_page_size(self, client: TestClient) -> None:
+        entries = [make_mock_entry(tmdb_id=i, title=f"Movie {i}") for i in range(2)]
+        mock_repo = make_mock_repo(total_count=5)
+        mock_repo.list_all = AsyncMock(return_value=entries)
+        override_repo(mock_repo)
+        try:
+            response = client.get("/api/v1/watch-entries?limit=2&offset=0")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 5
+        assert len(data["items"]) == 2
+        assert data["limit"] == 2
+        assert data["offset"] == 0
+
+    def test_offset_does_not_affect_total(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo(total_count=5)
+        override_repo(mock_repo)
+        try:
+            r1 = client.get("/api/v1/watch-entries?offset=0")
+            clear_repo_override()
+            override_repo(make_mock_repo(total_count=5))
+            r2 = client.get("/api/v1/watch-entries?offset=3")
+        finally:
+            clear_repo_override()
+
+        assert r1.json()["total"] == r2.json()["total"] == 5
+
+    def test_last_page_offset_beyond_items_returns_empty_items(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo(total_count=3)
+        mock_repo.list_all = AsyncMock(return_value=[])
+        override_repo(mock_repo)
+        try:
+            response = client.get("/api/v1/watch-entries?limit=10&offset=100")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["items"] == []
+        assert data["total"] == 3
+
+    def test_response_contains_limit_and_offset_fields(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo(total_count=0)
+        override_repo(mock_repo)
+        try:
+            response = client.get("/api/v1/watch-entries?limit=25&offset=50")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["limit"] == 25
+        assert data["offset"] == 50
+
+    def test_sort_by_my_rating_passes_param_to_repo(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo()
+        override_repo(mock_repo)
+        try:
+            response = client.get("/api/v1/watch-entries?sort_by=my_rating")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        mock_repo.list_all.assert_called_once_with(
+            limit=10, offset=0, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.desc
+        )
+
+    def test_sort_by_my_date_watched_passes_param_to_repo(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo()
+        override_repo(mock_repo)
+        try:
+            response = client.get("/api/v1/watch-entries?sort_by=my_date_watched")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        mock_repo.list_all.assert_called_once_with(
+            limit=10, offset=0, sort_by=WatchEntrySortBy.my_date_watched, sort_order=SortOrder.desc
+        )
+
+    def test_sort_order_asc_passes_param_to_repo(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo()
+        override_repo(mock_repo)
+        try:
+            response = client.get("/api/v1/watch-entries?sort_by=my_rating&sort_order=asc")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        mock_repo.list_all.assert_called_once_with(
+            limit=10, offset=0, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.asc
+        )
+
+    def test_invalid_sort_by_returns_422(self, client: TestClient) -> None:
+        response = client.get("/api/v1/watch-entries?sort_by=title")
+
+        assert response.status_code == 422
+
+    def test_invalid_sort_order_returns_422(self, client: TestClient) -> None:
+        response = client.get("/api/v1/watch-entries?sort_order=random")
+
+        assert response.status_code == 422

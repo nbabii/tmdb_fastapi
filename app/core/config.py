@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
 
-    model_config = {"env_file": ".env", "case_sensitive": True}
+    model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}
 
 
 settings = Settings()

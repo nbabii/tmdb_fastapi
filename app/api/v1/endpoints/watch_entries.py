@@ -67,11 +67,17 @@ async def create_watch_entries(
 @router.get("", response_model=WatchEntryListResponse)
 async def list_watch_entries(
     limit: int = Query(default=10, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     repo: WatchEntryRepository = Depends(get_watch_entry_repo),
 ) -> WatchEntryListResponse:
-    entries = await repo.list_all(limit=limit)
-    logger.info("Watch entries listed: count=%d limit=%d", len(entries), limit)
+    total, entries = (
+        await repo.count_all(),
+        await repo.list_all(limit=limit, offset=offset),
+    )
+    logger.info("Watch entries listed: count=%d limit=%d offset=%d total=%d", len(entries), limit, offset, total)
     return WatchEntryListResponse(
         items=[WatchEntryListItem.model_validate(e) for e in entries],
-        total=len(entries),
+        total=total,
+        limit=limit,
+        offset=offset,
     )

@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import nullslast, select
+from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.watched_movie import WatchedMovie
@@ -33,10 +33,15 @@ class WatchEntryRepository:
             await self._db.refresh(entry)
         return entries
 
-    async def list_all(self, limit: int = 10) -> list[WatchedMovie]:
+    async def count_all(self) -> int:
+        result = await self._db.scalar(select(func.count()).select_from(WatchedMovie))
+        return result or 0
+
+    async def list_all(self, limit: int = 10, offset: int = 0) -> list[WatchedMovie]:
         rows = await self._db.scalars(
             select(WatchedMovie)
             .order_by(nullslast(WatchedMovie.my_date_watched.desc()))
             .limit(limit)
+            .offset(offset)
         )
         return list(rows.all())

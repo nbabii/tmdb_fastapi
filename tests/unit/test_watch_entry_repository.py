@@ -82,3 +82,37 @@ class TestWatchEntryRepositoryUnit:
         db.scalars.assert_awaited_once()
         statement = db.scalars.await_args.args[0]
         assert "LIMIT" in str(statement)
+
+    @pytest.mark.asyncio
+    async def test_list_all_applies_offset(self) -> None:
+        db = AsyncMock(spec=AsyncSession)
+        rows = MagicMock()
+        rows.all.return_value = []
+        db.scalars.return_value = rows
+        repo = WatchEntryRepository(db)
+
+        await repo.list_all(limit=5, offset=20)
+
+        statement = db.scalars.await_args.args[0]
+        assert "OFFSET" in str(statement)
+
+    @pytest.mark.asyncio
+    async def test_count_all_returns_total(self) -> None:
+        db = AsyncMock(spec=AsyncSession)
+        db.scalar.return_value = 42
+        repo = WatchEntryRepository(db)
+
+        result = await repo.count_all()
+
+        assert result == 42
+        db.scalar.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_count_all_returns_zero_when_none(self) -> None:
+        db = AsyncMock(spec=AsyncSession)
+        db.scalar.return_value = None
+        repo = WatchEntryRepository(db)
+
+        result = await repo.count_all()
+
+        assert result == 0

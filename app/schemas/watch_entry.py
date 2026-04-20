@@ -46,6 +46,8 @@ class WatchEntryListItem(BaseModel):
 class WatchEntryListResponse(BaseModel):
     items: list[WatchEntryListItem]
     total: int
+    limit: int
+    offset: int
 
 
 class WatchEntryDetailResponse(BaseModel):

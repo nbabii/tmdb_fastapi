@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.watch_entry_repository import WatchEntryRepository
+from app.schemas.watch_entry import SortOrder, WatchEntrySortBy
 
 FIXED_UUID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 FIXED_DATETIME = datetime(2026, 3, 28, 12, 0, 0, tzinfo=timezone.utc)
@@ -95,6 +96,58 @@ class TestWatchEntryRepositoryUnit:
 
         statement = db.scalars.await_args.args[0]
         assert "OFFSET" in str(statement)
+
+    @pytest.mark.asyncio
+    async def test_list_all_default_sort_uses_my_rating(self) -> None:
+        db = AsyncMock(spec=AsyncSession)
+        rows = MagicMock()
+        rows.all.return_value = []
+        db.scalars.return_value = rows
+        repo = WatchEntryRepository(db)
+
+        await repo.list_all()
+
+        statement = db.scalars.await_args.args[0]
+        assert "my_rating" in str(statement)
+
+    @pytest.mark.asyncio
+    async def test_list_all_sort_by_my_date_watched_contains_column(self) -> None:
+        db = AsyncMock(spec=AsyncSession)
+        rows = MagicMock()
+        rows.all.return_value = []
+        db.scalars.return_value = rows
+        repo = WatchEntryRepository(db)
+
+        await repo.list_all(sort_by=WatchEntrySortBy.my_date_watched)
+
+        statement = db.scalars.await_args.args[0]
+        assert "my_date_watched" in str(statement)
+
+    @pytest.mark.asyncio
+    async def test_list_all_sort_order_asc_contains_asc(self) -> None:
+        db = AsyncMock(spec=AsyncSession)
+        rows = MagicMock()
+        rows.all.return_value = []
+        db.scalars.return_value = rows
+        repo = WatchEntryRepository(db)
+
+        await repo.list_all(sort_order=SortOrder.asc)
+
+        statement = db.scalars.await_args.args[0]
+        assert "ASC" in str(statement)
+
+    @pytest.mark.asyncio
+    async def test_list_all_sort_order_desc_contains_desc(self) -> None:
+        db = AsyncMock(spec=AsyncSession)
+        rows = MagicMock()
+        rows.all.return_value = []
+        db.scalars.return_value = rows
+        repo = WatchEntryRepository(db)
+
+        await repo.list_all(sort_order=SortOrder.desc)
+
+        statement = db.scalars.await_args.args[0]
+        assert "DESC" in str(statement)
 
     @pytest.mark.asyncio
     async def test_count_all_returns_total(self) -> None:

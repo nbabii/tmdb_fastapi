@@ -4,6 +4,7 @@ from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.watched_movie import WatchedMovie
+from app.schemas.watch_entry import SortOrder, WatchEntrySortBy
 
 
 class WatchEntryRepository:
@@ -37,10 +38,18 @@ class WatchEntryRepository:
         result = await self._db.scalar(select(func.count()).select_from(WatchedMovie))
         return result or 0
 
-    async def list_all(self, limit: int = 10, offset: int = 0) -> list[WatchedMovie]:
+    async def list_all(
+        self,
+        limit: int = 10,
+        offset: int = 0,
+        sort_by: WatchEntrySortBy = WatchEntrySortBy.my_rating,
+        sort_order: SortOrder = SortOrder.desc,
+    ) -> list[WatchedMovie]:
+        column = getattr(WatchedMovie, sort_by.value)
+        direction = column.asc() if sort_order == SortOrder.asc else column.desc()
         rows = await self._db.scalars(
             select(WatchedMovie)
-            .order_by(nullslast(WatchedMovie.my_date_watched.desc()))
+            .order_by(nullslast(direction))
             .limit(limit)
             .offset(offset)
         )

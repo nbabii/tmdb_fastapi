@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_tmdb_service, get_watch_entry_repo
 from app.main import app
 from app.repositories.watch_entry_repository import WatchEntryRepository
+from app.schemas.watch_entry import SortOrder, WatchEntrySortBy
 from app.services.tmdb_service import TmdbService
 
 FIXED_UUID = uuid.UUID("12345678-1234-5678-1234-567812345678")
@@ -393,7 +394,7 @@ class TestListWatchEntries:
 
         assert response.status_code == 200
         assert response.json()["total"] == 0
-        mock_repo.list_all.assert_called_once_with(limit=1, offset=0)
+        mock_repo.list_all.assert_called_once_with(limit=1, offset=0, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.desc)
 
     def test_limit_zero_returns_422(self, client: TestClient) -> None:
         response = client.get("/api/v1/watch-entries?limit=0")
@@ -413,7 +414,7 @@ class TestListWatchEntries:
         finally:
             clear_repo_override()
 
-        mock_repo.list_all.assert_called_once_with(limit=10, offset=0)
+        mock_repo.list_all.assert_called_once_with(limit=10, offset=0, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.desc)
 
     def test_db_error_returns_500(self, client: TestClient) -> None:
         override_repo(make_mock_repo(error=Exception("DB connection lost")))
@@ -433,7 +434,7 @@ class TestListWatchEntries:
         finally:
             clear_repo_override()
 
-        mock_repo.list_all.assert_called_once_with(limit=2, offset=3)
+        mock_repo.list_all.assert_called_once_with(limit=2, offset=3, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.desc)
 
     def test_default_offset_is_zero(self, client: TestClient) -> None:
         mock_repo = make_mock_repo()
@@ -443,7 +444,7 @@ class TestListWatchEntries:
         finally:
             clear_repo_override()
 
-        mock_repo.list_all.assert_called_once_with(limit=5, offset=0)
+        mock_repo.list_all.assert_called_once_with(limit=5, offset=0, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.desc)
 
     def test_offset_negative_returns_422(self, client: TestClient) -> None:
         response = client.get("/api/v1/watch-entries?offset=-1")
@@ -506,3 +507,52 @@ class TestListWatchEntries:
         data = response.json()
         assert data["limit"] == 25
         assert data["offset"] == 50
+
+    def test_sort_by_my_rating_passes_param_to_repo(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo()
+        override_repo(mock_repo)
+        try:
+            response = client.get("/api/v1/watch-entries?sort_by=my_rating")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        mock_repo.list_all.assert_called_once_with(
+            limit=10, offset=0, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.desc
+        )
+
+    def test_sort_by_my_date_watched_passes_param_to_repo(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo()
+        override_repo(mock_repo)
+        try:
+            response = client.get("/api/v1/watch-entries?sort_by=my_date_watched")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        mock_repo.list_all.assert_called_once_with(
+            limit=10, offset=0, sort_by=WatchEntrySortBy.my_date_watched, sort_order=SortOrder.desc
+        )
+
+    def test_sort_order_asc_passes_param_to_repo(self, client: TestClient) -> None:
+        mock_repo = make_mock_repo()
+        override_repo(mock_repo)
+        try:
+            response = client.get("/api/v1/watch-entries?sort_by=my_rating&sort_order=asc")
+        finally:
+            clear_repo_override()
+
+        assert response.status_code == 200
+        mock_repo.list_all.assert_called_once_with(
+            limit=10, offset=0, sort_by=WatchEntrySortBy.my_rating, sort_order=SortOrder.asc
+        )
+
+    def test_invalid_sort_by_returns_422(self, client: TestClient) -> None:
+        response = client.get("/api/v1/watch-entries?sort_by=title")
+
+        assert response.status_code == 422
+
+    def test_invalid_sort_order_returns_422(self, client: TestClient) -> None:
+        response = client.get("/api/v1/watch-entries?sort_order=random")
+
+        assert response.status_code == 422
